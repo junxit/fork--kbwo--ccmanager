@@ -72,6 +72,7 @@ type View =
 	| 'preset-selector'
 	| 'remote-branch-selector'
 	| 'rename-session'
+	| 'name-new-session'
 	| 'session-actions'
 	| 'confirm-exit'
 	| 'clearing';
@@ -123,10 +124,19 @@ const App: React.FC<AppProps> = ({
 	const [selectedWorktree, setSelectedWorktree] = useState<Worktree | null>(
 		null,
 	); // Store selected worktree for preset selection
+	// Name entered for the session about to be created via the preset
+	// selector, carried alongside selectedWorktree until creation completes.
+	const [pendingSessionName, setPendingSessionName] = useState<
+		string | undefined
+	>(undefined);
 	const [renameTarget, setRenameTarget] = useState<{
 		id: string;
 		name?: string;
 	} | null>(null);
+	// Worktree awaiting a session name before an additional session is
+	// started on it (only used when the worktree already has a session).
+	const [pendingNewSessionWorktree, setPendingNewSessionWorktree] =
+		useState<Worktree | null>(null);
 	const [sessionActionsTarget, setSessionActionsTarget] = useState<{
 		worktreePath: string;
 		session?: ISession;
@@ -246,6 +256,7 @@ const App: React.FC<AppProps> = ({
 			worktreePath: string,
 			presetId?: string,
 			initialPrompt?: string,
+			sessionName?: string,
 		): Promise<{
 			success: boolean;
 			session?: ISession;
@@ -265,11 +276,13 @@ const App: React.FC<AppProps> = ({
 								return next.length > 10 ? next.slice(-10) : next;
 							});
 						},
+						sessionName,
 					)
 				: sessionManager.createSessionWithPresetEffect(
 						worktreePath,
 						presetId,
 						initialPrompt,
+						sessionName,
 					);
 
 			const result = await Effect.runPromise(Effect.either(sessionEffect));
@@ -362,6 +375,7 @@ const App: React.FC<AppProps> = ({
 				initialPrompt?: string;
 				session?: ISession;
 				forceNew?: boolean;
+				sessionName?: string;
 			},
 		) => {
 			// If a specific session is provided, navigate to it directly
@@ -383,6 +397,7 @@ const App: React.FC<AppProps> = ({
 
 			if (!options?.presetId && configReader.getSelectPresetOnStart()) {
 				setSelectedWorktree(worktree);
+				setPendingSessionName(options?.sessionName);
 				navigateWithClear('preset-selector');
 				return;
 			}
@@ -395,6 +410,7 @@ const App: React.FC<AppProps> = ({
 				worktree.path,
 				options?.presetId,
 				options?.initialPrompt,
+				options?.sessionName,
 			);
 
 			if (!result.success) {
@@ -538,15 +554,13 @@ const App: React.FC<AppProps> = ({
 				navigateWithClear('new-worktree');
 				return;
 			case 'newSession':
-				await startSessionForWorktree(
-					{
-						path: action.worktreePath,
-						branch: '',
-						isMainWorktree: false,
-						hasSession: true,
-					},
-					{forceNew: true},
-				);
+				setPendingNewSessionWorktree({
+					path: action.worktreePath,
+					branch: '',
+					isMainWorktree: false,
+					hasSession: true,
+				});
+				navigateWithClear('name-new-session');
 				return;
 			case 'renameSession':
 				setRenameTarget({
@@ -596,6 +610,8 @@ const App: React.FC<AppProps> = ({
 	const handlePresetSelected = async (presetId: string) => {
 		if (!selectedWorktree) return;
 
+		const sessionName = pendingSessionName;
+
 		// Set loading state before async operation
 		setView('creating-session-preset');
 
@@ -603,22 +619,27 @@ const App: React.FC<AppProps> = ({
 		const result = await createSessionWithEffect(
 			selectedWorktree.path,
 			presetId,
+			undefined,
+			sessionName,
 		);
 
 		if (!result.success) {
 			setError(result.errorMessage!);
 			setView('menu');
 			setSelectedWorktree(null);
+			setPendingSessionName(undefined);
 			return;
 		}
 
 		// Success case
 		navigateToSession(result.session!);
 		setSelectedWorktree(null);
+		setPendingSessionName(undefined);
 	};
 
 	const handlePresetSelectorCancel = () => {
 		setSelectedWorktree(null);
+		setPendingSessionName(undefined);
 		navigateWithClear('menu', () => {
 			setMenuKey(prev => prev + 1);
 		});
@@ -1191,6 +1212,27 @@ const App: React.FC<AppProps> = ({
 		);
 	}
 
+	if (view === 'name-new-session' && pendingNewSessionWorktree) {
+		const worktree = pendingNewSessionWorktree;
+		return (
+			<SessionRename
+				title="New Session"
+				placeholder="Enter session name (optional)"
+				onRename={sessionName => {
+					setPendingNewSessionWorktree(null);
+					void startSessionForWorktree(worktree, {
+						forceNew: true,
+						sessionName,
+					});
+				}}
+				onCancel={() => {
+					setPendingNewSessionWorktree(null);
+					handleReturnToMenu();
+				}}
+			/>
+		);
+	}
+
 	if (view === 'session-actions' && sessionActionsTarget) {
 		const {
 			session: targetSession,
@@ -1208,17 +1250,24 @@ const App: React.FC<AppProps> = ({
 		const handleSessionAction = async (action: SessionActionType) => {
 			setSessionActionsTarget(null);
 			switch (action) {
-				case 'newSession':
-					await startSessionForWorktree(
-						{
-							path: worktreePath,
-							branch: '',
-							isMainWorktree: false,
-							hasSession: true,
-						},
-						{forceNew: true},
-					);
+				case 'newSession': {
+					const newSessionWorktree = {
+						path: worktreePath,
+						branch: '',
+						isMainWorktree: false,
+						hasSession: true,
+					};
+					// Only prompt for a name when the worktree already has a
+					// session — starting the very first one keeps the old,
+					// no-prompt behavior.
+					if (targetSession) {
+						setPendingNewSessionWorktree(newSessionWorktree);
+						navigateWithClear('name-new-session');
+						return;
+					}
+					await startSessionForWorktree(newSessionWorktree, {forceNew: true});
 					return;
+				}
 				case 'rename':
 					if (!targetSession) return;
 					setRenameTarget({
