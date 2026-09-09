@@ -286,11 +286,33 @@ vi.mock('./LoadingSpinner.js', async () => {
 	};
 });
 
+const flush = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
+
 beforeAll(async () => {
 	App = (await import('./App.js')).default;
-});
 
-const flush = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
+	// Ink's useInput attaches its raw-mode input listener to the (fake) stdin
+	// asynchronously, in a useEffect. The first time any component in this
+	// worker process mounts a useInput consumer, React's effect scheduler
+	// needs to initialize, which can take longer than the fixed-duration
+	// flush()es the tests below use between rendering a view and writing to
+	// stdin — an early write then races ahead of the listener and is silently
+	// dropped (see the CI-only flakiness this caused: the same commit passed
+	// on the regular CI workflow but failed on the "Publish to npm" workflow,
+	// because it happened to land on a different test as the first one to hit
+	// this path). Mounting and unmounting a throwaway useInput consumer here
+	// pays that one-time cost up front, before any test relies on tight
+	// timing.
+	const {useInput: realUseInput} =
+		await vi.importActual<typeof import('ink')>('ink');
+	const Warmup = () => {
+		realUseInput(() => {});
+		return null;
+	};
+	const warmup = render(React.createElement(Warmup));
+	await flush(200);
+	warmup.unmount();
+});
 
 const waitForCondition = async (
 	condition: () => boolean,
