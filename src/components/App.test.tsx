@@ -1071,6 +1071,13 @@ describe('starting an additional session on a worktree', () => {
 			5000,
 		);
 
+		// SessionActions is the first component in this test to call Ink's
+		// useInput; it attaches its raw-mode input listener in a useEffect that
+		// runs asynchronously after this render, so a flush is needed here or
+		// the shortcut below can be written before the listener is attached and
+		// get silently dropped.
+		await flush(50);
+
 		// 'S' is the shortcut for "New session in this worktree".
 		stdin.write('S');
 		await flush(20);
@@ -1119,6 +1126,13 @@ describe('starting an additional session on a worktree', () => {
 			() => lastFrame()?.includes('Worktree Actions') ?? false,
 			5000,
 		);
+
+		// SessionActions is the first component in this test to call Ink's
+		// useInput; it attaches its raw-mode input listener in a useEffect that
+		// runs asynchronously after this render, so a flush is needed here or
+		// the shortcut below can be written before the listener is attached and
+		// get silently dropped.
+		await flush(50);
 
 		stdin.write('S');
 
